@@ -592,8 +592,6 @@ SDL_Surface *IMG_LoadPNG_RW(SDL_RWops *src)
 
 #ifdef SAVE_PNG
 
-#include "miniz.h"
-
 int IMG_SavePNG(SDL_Surface *surface, const char *file)
 {
     SDL_RWops *dst = SDL_RWFromFile(file, "wb");
@@ -604,16 +602,23 @@ int IMG_SavePNG(SDL_Surface *surface, const char *file)
     }
 }
 
-int IMG_SavePNG_RW(SDL_Surface *surface, SDL_RWops *dst, int freedst)
+#if SDL_BYTEORDER == SDL_LIL_ENDIAN
+static const Uint32 png_format = SDL_PIXELFORMAT_ABGR8888;
+#else
+static const Uint32 png_format = SDL_PIXELFORMAT_RGBA8888;
+#endif
+
+static int IMG_SavePNG_RW_libpng(SDL_Surface *surface, SDL_RWops *dst, int freedst)
+{
+}
+
+#include "miniz.h"
+
+static int IMG_SavePNG_RW_miniz(SDL_Surface *surface, SDL_RWops *dst, int freedst)
 {
     int result = -1;
 
     if (dst) {
-#if SDL_BYTEORDER == SDL_LIL_ENDIAN
-        static const Uint32 png_format = SDL_PIXELFORMAT_ABGR8888;
-#else
-        static const Uint32 png_format = SDL_PIXELFORMAT_RGBA8888;
-#endif
         size_t size;
         void *png = NULL;
 
@@ -641,6 +646,23 @@ int IMG_SavePNG_RW(SDL_Surface *surface, SDL_RWops *dst, int freedst)
         SDL_SetError("Passed NULL dst");
     }
     return result;
+}
+
+int IMG_SavePNG_RW(SDL_Surface *surface, SDL_RWops *dst, int freedst)
+{
+    static int (*rw_func)(SDL_Surface *surface, SDL_RWops *dst, int freedst);
+
+    if (!rw_func)
+    {
+#ifdef LOAD_PNG
+        if ( (IMG_Init(IMG_INIT_PNG) & IMG_INIT_PNG) != 0 ) {
+            rw_func = IMG_SavePNG_RW_libpng;
+        } else
+#endif
+            rw_func = IMG_SavePNG_RW_miniz;
+    }
+
+    return rw_func(surface, dst, freedst);
 }
 
 #endif /* SAVE_PNG */
