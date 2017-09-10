@@ -103,6 +103,13 @@ static struct {
 #ifndef LIBPNG_VERSION_12
     jmp_buf* (*png_set_longjmp_fn) (png_structp, png_longjmp_ptr, size_t);
 #endif
+    png_structp (*png_create_write_struct) (png_const_charp user_png_ver, png_voidp error_ptr, png_error_ptr error_fn, png_error_ptr warn_fn);
+    void (*png_destroy_write_struct) (png_structpp png_ptr_ptr, png_infopp info_ptr_ptr);
+    void (*png_set_write_fn) (png_structp png_ptr, png_voidp io_ptr, png_rw_ptr write_data_fn, png_flush_ptr output_flush_fn);
+    void (*png_set_IHDR) (png_structp png_ptr, png_infop info_ptr, png_uint_32 width, png_uint_32 height, int bit_depth, int color_type, int interlace_type, int compression_type, int filter_type);
+    void (*png_write_info) (png_structp png_ptr, png_infop info_ptr);
+    void (*png_set_rows) (png_structp png_ptr, png_infop info_ptr, png_bytepp row_pointers);
+    void (*png_write_png) (png_structp png_ptr, png_infop info_ptr, int transforms, png_voidp params);
 } lib;
 
 #ifdef LOAD_PNG_DYNAMIC
@@ -248,6 +255,55 @@ int IMG_InitPNG()
             return -1;
         }
 #endif
+        lib.png_create_write_struct =
+            (png_structp (*) (png_const_charp, png_voidp, png_error_ptr, png_error_ptr))
+            SDL_LoadFunction(lib.handle, "png_create_write_struct");
+        if ( lib.png_create_write_struct == NULL ) {
+            SDL_UnloadObject(lib.handle);
+            return -1;
+        }
+        lib.png_destroy_write_struct =
+            (void (*) (png_structpp, png_infopp))
+            SDL_LoadFunction(lib.handle, "png_destroy_write_struct");
+        if ( lib.png_destroy_write_struct == NULL ) {
+            SDL_UnloadObject(lib.handle);
+            return -1;
+        }
+        lib.png_set_write_fn =
+            (void (*) (png_structp, png_voidp, png_rw_ptr, png_flush_ptr))
+            SDL_LoadFunction(lib.handle, "png_set_write_fn");
+        if ( lib.png_set_write_fn == NULL ) {
+            SDL_UnloadObject(lib.handle);
+            return -1;
+        }
+        lib.png_set_IHDR =
+            (void (*) (png_structp, png_infop, png_uint_32, png_uint_32, int, int, int, int, int))
+            SDL_LoadFunction(lib.handle, "png_set_IHDR");
+        if ( lib.png_set_IHDR == NULL ) {
+            SDL_UnloadObject(lib.handle);
+            return -1;
+        }
+        lib.png_write_info =
+            (void (*) (png_structp, png_infop))
+            SDL_LoadFunction(lib.handle, "png_write_info");
+        if ( lib.png_write_info == NULL ) {
+            SDL_UnloadObject(lib.handle);
+            return -1;
+        }
+        lib.png_set_rows =
+            (void (*) (png_structp, png_infop, png_bytepp))
+            SDL_LoadFunction(lib.handle, "png_set_rows");
+        if ( lib.png_set_rows == NULL ) {
+            SDL_UnloadObject(lib.handle);
+            return -1;
+        }
+        lib.png_write_png =
+            (void (*) (png_structp, png_infop, int, png_voidp))
+            SDL_LoadFunction(lib.handle, "png_write_png");
+        if ( lib.png_write_png == NULL ) {
+            SDL_UnloadObject(lib.handle);
+            return -1;
+        }
     }
     ++lib.loaded;
 
@@ -288,6 +344,13 @@ int IMG_InitPNG()
 #ifndef LIBPNG_VERSION_12
         lib.png_set_longjmp_fn = png_set_longjmp_fn;
 #endif
+        lib.png_create_write_struct = png_create_write_struct;
+        lib.png_destroy_write_struct = png_destroy_write_struct;
+        lib.png_set_write_fn = png_set_write_fn;
+        lib.png_set_IHDR = png_set_IHDR;
+        lib.png_write_info = png_write_info;
+        lib.png_set_rows = png_set_rows;
+        lib.png_write_png = png_write_png;
     }
     ++lib.loaded;
 
@@ -608,8 +671,79 @@ static const Uint32 png_format = SDL_PIXELFORMAT_ABGR8888;
 static const Uint32 png_format = SDL_PIXELFORMAT_RGBA8888;
 #endif
 
+static void png_write_data(png_structp png_ptr, png_bytep src, png_size_t size)
+{
+    SDL_RWops *dst = (SDL_RWops *)lib.png_get_io_ptr(png_ptr);
+    SDL_RWwrite(dst, src, size, 1);
+}
+
+static void png_flush_data(png_structp png_ptr)
+{
+}
+
 static int IMG_SavePNG_RW_libpng(SDL_Surface *surface, SDL_RWops *dst, int freedst)
 {
+    if (dst) {
+        png_structp png_ptr;
+        png_infop info_ptr;
+        png_colorp pcolor;
+        SDL_Surface *source = surface;
+
+        png_ptr = lib.png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+        if (png_ptr == NULL) {
+            SDL_SetError("Couldn't allocate memory for PNG file or incompatible PNG dll");
+            return -1;
+        }
+
+        info_ptr = lib.png_create_info_struct(png_ptr);
+        if (info_ptr == NULL) {
+            lib.png_destroy_write_struct(&png_ptr, NULL);
+            SDL_SetError("Couldn't create image information for PNG file");
+            return -1;
+        }
+
+        lib.png_set_IHDR(png_ptr, info_ptr, surface->w, surface->h,
+                         8, PNG_COLOR_TYPE_RGB_ALPHA, PNG_INTERLACE_NONE,
+                         PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+
+        lib.png_set_write_fn(png_ptr, dst, png_write_data, png_flush_data);
+
+        if (surface->format->format == png_format) {
+            source = surface;
+        } else {
+            source = SDL_ConvertSurfaceFormat(surface, png_format, 0);
+        }
+
+        if (source) {
+            png_bytep *row_pointers;
+            int row;
+
+            row_pointers = (png_bytep *) SDL_malloc(sizeof(png_bytep) * source->h);
+            if (!row_pointers) {
+                SDL_SetError("Out of memory");
+                return -1;
+            }
+            for (row = 0; row < (int)source->h; row++) {
+                row_pointers[row] = (png_bytep) (Uint8 *) source->pixels + row * source->pitch;
+            }
+
+            lib.png_set_rows(png_ptr, info_ptr, row_pointers);
+            lib.png_write_png(png_ptr, info_ptr, PNG_TRANSFORM_IDENTITY, NULL);
+
+            SDL_free(row_pointers);
+            if (source != surface) {
+                SDL_FreeSurface(source);
+            }
+        }
+        lib.png_destroy_write_struct(&png_ptr, &info_ptr);
+        if (freedst) {
+            SDL_RWclose(dst);
+        }
+    } else {
+        SDL_SetError("Passed NULL dst");
+        return -1;
+    }
+    return 0;
 }
 
 #include "miniz.h"
