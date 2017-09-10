@@ -110,6 +110,7 @@ static struct {
     void (*png_write_info) (png_structp png_ptr, png_infop info_ptr);
     void (*png_set_rows) (png_structp png_ptr, png_infop info_ptr, png_bytepp row_pointers);
     void (*png_write_png) (png_structp png_ptr, png_infop info_ptr, int transforms, png_voidp params);
+    void (*png_set_PLTE) (png_structp png_ptr, png_infop info_ptr, png_colorp palette, int num_palette);
 } lib;
 
 #ifdef LOAD_PNG_DYNAMIC
@@ -304,6 +305,13 @@ int IMG_InitPNG()
             SDL_UnloadObject(lib.handle);
             return -1;
         }
+        lib.png_set_PLTE =
+            (void (*) (png_structp, png_infop, png_colorp, int))
+            SDL_LoadFunction(lib.handle, "png_set_PLTE");
+        if ( lib.png_set_PLTE == NULL ) {
+            SDL_UnloadObject(lib.handle);
+            return -1;
+        }
     }
     ++lib.loaded;
 
@@ -351,6 +359,7 @@ int IMG_InitPNG()
         lib.png_write_info = png_write_info;
         lib.png_set_rows = png_set_rows;
         lib.png_write_png = png_write_png;
+        lib.png_set_PLTE = png_set_PLTE;
     }
     ++lib.loaded;
 
@@ -686,8 +695,10 @@ static int IMG_SavePNG_RW_libpng(SDL_Surface *surface, SDL_RWops *dst, int freed
     if (dst) {
         png_structp png_ptr;
         png_infop info_ptr;
-        png_colorp pcolor;
+        png_colorp color_ptr = NULL;
         SDL_Surface *source = surface;
+        SDL_Palette *palette;
+        int png_color_type = PNG_COLOR_TYPE_RGB_ALPHA;
 
         png_ptr = lib.png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
         if (png_ptr == NULL) {
@@ -702,17 +713,35 @@ static int IMG_SavePNG_RW_libpng(SDL_Surface *surface, SDL_RWops *dst, int freed
             return -1;
         }
 
-        lib.png_set_IHDR(png_ptr, info_ptr, surface->w, surface->h,
-                         8, PNG_COLOR_TYPE_RGB_ALPHA, PNG_INTERLACE_NONE,
-                         PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+        palette = surface->format->palette;
+        if (palette) {
+            const int ncolors = palette->ncolors;
+            int i;
+
+            color_ptr = SDL_malloc(sizeof(png_colorp) * ncolors);
+            if (color_ptr == NULL)
+            {
+                lib.png_destroy_write_struct(&png_ptr, &info_ptr);
+                SDL_SetError("Couldn't create palette for PNG file");
+                return -1;
+            }
+            for (i = 0; i < ncolors; i++) {
+                color_ptr[i].red = palette->colors[i].r;
+                color_ptr[i].green = palette->colors[i].g;
+                color_ptr[i].blue = palette->colors[i].b;
+            }
+            lib.png_set_PLTE(png_ptr, info_ptr, color_ptr, ncolors);
+            png_color_type = PNG_COLOR_TYPE_PALETTE;
+        }
+        else if (surface->format->format != png_format) {
+            source = SDL_ConvertSurfaceFormat(surface, png_format, 0);
+        }
 
         lib.png_set_write_fn(png_ptr, dst, png_write_data, png_flush_data);
 
-        if (surface->format->format == png_format) {
-            source = surface;
-        } else {
-            source = SDL_ConvertSurfaceFormat(surface, png_format, 0);
-        }
+        lib.png_set_IHDR(png_ptr, info_ptr, surface->w, surface->h,
+                         8, png_color_type, PNG_INTERLACE_NONE,
+                         PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
 
         if (source) {
             png_bytep *row_pointers;
@@ -720,6 +749,7 @@ static int IMG_SavePNG_RW_libpng(SDL_Surface *surface, SDL_RWops *dst, int freed
 
             row_pointers = (png_bytep *) SDL_malloc(sizeof(png_bytep) * source->h);
             if (!row_pointers) {
+                lib.png_destroy_write_struct(&png_ptr, &info_ptr);
                 SDL_SetError("Out of memory");
                 return -1;
             }
@@ -736,6 +766,9 @@ static int IMG_SavePNG_RW_libpng(SDL_Surface *surface, SDL_RWops *dst, int freed
             }
         }
         lib.png_destroy_write_struct(&png_ptr, &info_ptr);
+        if (color_ptr) {
+            SDL_free(color_ptr);
+        }
         if (freedst) {
             SDL_RWclose(dst);
         }
