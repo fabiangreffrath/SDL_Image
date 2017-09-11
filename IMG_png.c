@@ -713,6 +713,17 @@ static int IMG_SavePNG_RW_libpng(SDL_Surface *surface, SDL_RWops *dst, int freed
             return -1;
         }
 
+#ifndef LIBPNG_VERSION_12
+        if (setjmp(*lib.png_set_longjmp_fn(png_ptr, longjmp, sizeof (jmp_buf))))
+#else
+        if (setjmp(png_ptr->jmpbuf))
+#endif
+        {
+            lib.png_destroy_write_struct(&png_ptr, &info_ptr);
+            SDL_SetError("Error writing the PNG file.");
+            return -1;
+        }
+
         palette = surface->format->palette;
         if (palette) {
             const int ncolors = palette->ncolors;
